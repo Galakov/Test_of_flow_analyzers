@@ -1,0 +1,49 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyQt
+*.ui
+
+# Excel РІСЂРµРјРµРЅРЅС‹Рµ С„Р°Р№Р»С‹
+~$*.xlsx
+~$*.xls
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Р›РѕРіРё
+*.log
+
+# Р’СЂРµРјРµРЅРЅС‹Рµ С„Р°Р№Р»С‹
+*.tmp
+*.temp
+
+# Р‘РѕР»СЊС€РёРµ С„Р°Р№Р»С‹ РґР°РЅРЅС‹С… (РјРѕР¶РЅРѕ СЂР°СЃРєРѕРјРјРµРЅС‚РёСЂРѕРІР°С‚СЊ РµСЃР»Рё РЅРµ РЅСѓР¶РЅС‹ РІ СЂРµРїРѕР·РёС‚РѕСЂРёРё)
+# *.xlsx
+# *.xls
