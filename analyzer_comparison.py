@@ -10,7 +10,8 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
                              QTableWidget, QTableWidgetItem, QSplitter, QDialog,
-                             QTextEdit, QTabWidget, QScrollArea, QFrame, QComboBox)
+                             QTextEdit, QTabWidget, QScrollArea, QFrame, QComboBox,
+                             QGroupBox, QLineEdit, QMessageBox, QDateTimeEdit, QCheckBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 import pyqtgraph as pg
@@ -320,6 +321,183 @@ class DataDebuggerDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, 'Ошибка', f'Не удалось сохранить отчет:\n{str(e)}')
 
+
+class ScaleSettingsDialog(QDialog):
+    """Диалог настройки шкал приборов и класса точности"""
+
+    def __init__(self, parent=None, current_scales=None):
+        super().__init__(parent)
+        self.setWindowTitle('Настройки шкал приборов')
+        self.setGeometry(300, 300, 600, 400)
+        self.current_scales = current_scales or {}
+        self.scale_inputs = {}  # Словарь для хранения полей ввода
+        self.init_ui()
+
+    def init_ui(self):
+        """Инициализация интерфейса диалога"""
+        layout = QVBoxLayout(self)
+
+        # Заголовок
+        title = QLabel('⚙️ НАСТРОЙКА ШКАЛ ПРИБОРОВ И КЛАССА ТОЧНОСТИ')
+        title.setStyleSheet('QLabel { font-size: 14px; font-weight: bold; color: #2c3e50; padding: 10px; }')
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # Инструкция
+        instruction = QLabel(
+            'Укажите верхний предел измерения (шкалу) и класс точности для каждого анализатора.\n'
+            'Класс точности указывается в % от шкалы (например: 1.0 для класса 1.0).'
+        )
+        instruction.setStyleSheet('QLabel { padding: 5px; color: #7f8c8d; }')
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+
+        # Скроллируемая область для настроек
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+
+        # Получаем список анализаторов из родительского приложения
+        if self.parent() and hasattr(self.parent(), 'plots'):
+            for plot_data in self.parent().plots:
+                gas_type = plot_data['gas_type']
+                data_cols = plot_data['data_cols']
+
+                # Группа для газа
+                gas_group = QGroupBox(f'📊 {gas_type}')
+                gas_group.setStyleSheet('QGroupBox { font-weight: bold; padding: 10px; }')
+                gas_layout = QVBoxLayout()
+
+                if gas_type not in self.scale_inputs:
+                    self.scale_inputs[gas_type] = {}
+
+                for analyzer in data_cols:
+                    # Строка для каждого анализатора
+                    analyzer_layout = QHBoxLayout()
+
+                    # Название анализатора
+                    name_label = QLabel(analyzer)
+                    name_label.setMinimumWidth(150)
+                    name_label.setStyleSheet('QLabel { font-size: 11px; }')
+                    analyzer_layout.addWidget(name_label)
+
+                    # Поле ввода шкалы
+                    scale_label = QLabel('Шкала (мг/м³):')
+                    analyzer_layout.addWidget(scale_label)
+
+                    scale_input = QLineEdit()
+                    scale_input.setPlaceholderText('100.0')
+                    scale_input.setMaximumWidth(80)
+
+                    # Загружаем сохраненное значение, если есть
+                    if gas_type in self.current_scales and analyzer in self.current_scales[gas_type]:
+                        scale_val = self.current_scales[gas_type][analyzer].get('scale', '')
+                        if scale_val:
+                            scale_input.setText(str(scale_val))
+
+                    analyzer_layout.addWidget(scale_input)
+
+                    # Поле ввода класса точности
+                    accuracy_label = QLabel('Класс точности (%):')
+                    analyzer_layout.addWidget(accuracy_label)
+
+                    accuracy_input = QLineEdit()
+                    accuracy_input.setPlaceholderText('1.0')
+                    accuracy_input.setMaximumWidth(80)
+
+                    # Загружаем сохраненное значение, если есть
+                    if gas_type in self.current_scales and analyzer in self.current_scales[gas_type]:
+                        accuracy_val = self.current_scales[gas_type][analyzer].get('accuracy_class', '')
+                        if accuracy_val:
+                            accuracy_input.setText(str(accuracy_val))
+
+                    analyzer_layout.addWidget(accuracy_input)
+
+                    analyzer_layout.addStretch()
+
+                    gas_layout.addLayout(analyzer_layout)
+
+                    # Сохраняем ссылки на поля ввода
+                    self.scale_inputs[gas_type][analyzer] = {
+                        'scale': scale_input,
+                        'accuracy': accuracy_input
+                    }
+
+                gas_group.setLayout(gas_layout)
+                scroll_layout.addWidget(gas_group)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Кнопки управления
+        buttons_layout = QHBoxLayout()
+
+        save_btn = QPushButton('💾 Сохранить')
+        save_btn.clicked.connect(self.save_settings)
+        save_btn.setStyleSheet(
+            'QPushButton { padding: 8px; font-size: 11px; background-color: #27ae60; color: white; }'
+        )
+        buttons_layout.addWidget(save_btn)
+
+        cancel_btn = QPushButton('❌ Отмена')
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet('QPushButton { padding: 8px; font-size: 11px; }')
+        buttons_layout.addWidget(cancel_btn)
+
+        layout.addLayout(buttons_layout)
+
+    def save_settings(self):
+        """Сохранение настроек"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        result = {}
+        errors = []
+
+        for gas_type, analyzers in self.scale_inputs.items():
+            result[gas_type] = {}
+
+            for analyzer, inputs in analyzers.items():
+                scale_text = inputs['scale'].text().strip()
+                accuracy_text = inputs['accuracy'].text().strip()
+
+                # Пропускаем пустые поля
+                if not scale_text and not accuracy_text:
+                    continue
+
+                try:
+                    scale = float(scale_text.replace(',', '.')) if scale_text else None
+                    accuracy = float(accuracy_text.replace(',', '.')) if accuracy_text else None
+
+                    if scale is not None and scale <= 0:
+                        errors.append(f'{gas_type} - {analyzer}: шкала должна быть положительной')
+                        continue
+
+                    if accuracy is not None and (accuracy <= 0 or accuracy > 100):
+                        errors.append(f'{gas_type} - {analyzer}: класс точности должен быть от 0 до 100%')
+                        continue
+
+                    result[gas_type][analyzer] = {
+                        'scale': scale,
+                        'accuracy_class': accuracy
+                    }
+
+                except ValueError:
+                    errors.append(f'{gas_type} - {analyzer}: некорректное числовое значение')
+
+        if errors:
+            QMessageBox.warning(self, 'Ошибки ввода', '\n'.join(errors))
+            return
+
+        self.result_scales = result
+        self.accept()
+
+    def get_scales(self):
+        """Получить настроенные шкалы"""
+        return getattr(self, 'result_scales', {})
+
+
 class AnalyzerComparisonApp(QMainWindow):
     """Главное окно приложения для сравнения анализаторов"""
 
@@ -330,6 +508,31 @@ class AnalyzerComparisonApp(QMainWindow):
         self.crosshair_lines = []  # Линии перекрестия
         self.value_labels = []  # Метки для отображения значений
         self.highlight_items = []  # Элементы выделения на графике
+
+        # Состояние режима выборки диапазона
+        self.selection_mode = False  # Флаг режима выборки
+        self.selection_regions = []  # Список LinearRegionItem объектов
+        self.selection_results = {}  # Результаты расчетов {plot_index: results_dict}
+        self.original_mouse_handlers = []  # Оригинальные обработчики событий
+        self.current_selection_region = None  # Временная переменная при создании
+        self.selection_start_x = None  # Начало выделения
+        self.selection_plot_index = None  # Индекс активного графика
+
+        # Режим фильтрации выбросов (замена 0 и 1 на предыдущие значения)
+        self.filter_outliers_mode = False  # Флаг режима фильтрации
+
+        # Временное хранилище регионов при создании выделения
+        self.temp_selection_regions = []
+
+        # Настройки шкал приборов и погрешностей
+        # Формат: {gas_type: {analyzer_name: {'scale': float, 'accuracy_class': float}}}
+        self.analyzer_scales = {}
+
+        # Настройки диапазона времени для графиков
+        self.date_range_enabled = False  # Флаг использования диапазона
+        self.date_range_start = None  # Начало диапазона
+        self.date_range_end = None  # Конец диапазона
+
         self.init_ui()
 
     def init_ui(self):
@@ -346,12 +549,17 @@ class AnalyzerComparisonApp(QMainWindow):
         control_panel = self.create_control_panel()
         main_layout.addWidget(control_panel)
 
+        # Панель выбора диапазона дат
+        date_range_panel = self.create_date_range_panel()
+        main_layout.addWidget(date_range_panel)
+
         # Панель информации (метки для отображения значений при перекрестии)
         self.info_label = QLabel('Наведите курсор на график для отображения значений')
-        self.info_label.setStyleSheet('QLabel { background-color: #f0f0f0; padding: 10px; font-size: 12px; }')
-        self.info_label.setMinimumHeight(120)
-        self.info_label.setMaximumHeight(180)
+        self.info_label.setStyleSheet('QLabel { background-color: #f0f0f0; padding: 8px; font-size: 11px; border: 1px solid #d0d0d0; }')
         self.info_label.setWordWrap(True)
+        self.info_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.info_label.setMinimumHeight(140)
+        self.info_label.setMaximumHeight(200)
         main_layout.addWidget(self.info_label)
 
         # Создаем горизонтальный разделитель для графика и таблицы
@@ -473,6 +681,42 @@ class AnalyzerComparisonApp(QMainWindow):
         self.btn_debug.setStyleSheet('QPushButton { font-size: 11px; padding: 8px; background-color: #FF9800; color: white; } QPushButton:disabled { background-color: #cccccc; }')
         layout.addWidget(self.btn_debug)
 
+        # Кнопка фильтрации выбросов
+        self.btn_filter_outliers = QPushButton('🔧 Фильтр выбросов (0/1)')
+        self.btn_filter_outliers.setCheckable(True)
+        self.btn_filter_outliers.setChecked(False)
+        self.btn_filter_outliers.toggled.connect(self.toggle_filter_outliers)
+        self.btn_filter_outliers.setEnabled(False)
+        self.btn_filter_outliers.setStyleSheet(self.get_filter_button_style(False))
+        self.btn_filter_outliers.setToolTip('Заменять нули и единицы на предыдущие значения (для устранения выбросов при обрыве связи)')
+        layout.addWidget(self.btn_filter_outliers)
+
+        # Кнопка настройки шкал приборов
+        self.btn_scale_settings = QPushButton('⚙️ Шкалы приборов')
+        self.btn_scale_settings.clicked.connect(self.open_scale_settings)
+        self.btn_scale_settings.setEnabled(False)
+        self.btn_scale_settings.setStyleSheet('QPushButton { font-size: 11px; padding: 8px; background-color: #9C27B0; color: white; } QPushButton:disabled { background-color: #cccccc; }')
+        self.btn_scale_settings.setToolTip('Настроить шкалы и класс точности приборов для расчета приведенной погрешности')
+        layout.addWidget(self.btn_scale_settings)
+
+        layout.addStretch()
+
+        # Кнопка режима выборки
+        self.btn_selection_mode = QPushButton('🎯 Режим выборки')
+        self.btn_selection_mode.setCheckable(True)
+        self.btn_selection_mode.setChecked(False)
+        self.btn_selection_mode.toggled.connect(self.toggle_selection_mode)
+        self.btn_selection_mode.setEnabled(False)
+        self.btn_selection_mode.setStyleSheet(self.get_button_style(False))
+        layout.addWidget(self.btn_selection_mode)
+
+        # Кнопка очистки выборки
+        self.btn_clear_selection = QPushButton('🗑️ Очистить выборку')
+        self.btn_clear_selection.clicked.connect(self.clear_all_selections)
+        self.btn_clear_selection.setEnabled(False)
+        self.btn_clear_selection.setStyleSheet('QPushButton { padding: 4px; font-size: 10px; }')
+        layout.addWidget(self.btn_clear_selection)
+
         # Кнопка построения графиков
         self.btn_plot = QPushButton('📊 Построить графики')
         self.btn_plot.clicked.connect(self.plot_data)
@@ -487,6 +731,202 @@ class AnalyzerComparisonApp(QMainWindow):
         layout.addWidget(btn_clear)
 
         return panel
+
+    def create_date_range_panel(self):
+        """Создание панели выбора диапазона дат и времени для графиков"""
+        panel = QWidget()
+        panel.setStyleSheet('QWidget { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px; }')
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(10, 5, 10, 5)
+
+        # Чекбокс для включения/отключения фильтрации по диапазону
+        self.date_range_checkbox = QCheckBox('📅 Диапазон дат:')
+        self.date_range_checkbox.setStyleSheet('QCheckBox { font-size: 11px; font-weight: bold; }')
+        self.date_range_checkbox.toggled.connect(self.toggle_date_range)
+        layout.addWidget(self.date_range_checkbox)
+
+        # Метка "С:"
+        label_from = QLabel('С:')
+        label_from.setStyleSheet('QLabel { font-size: 11px; margin-left: 10px; }')
+        layout.addWidget(label_from)
+
+        # Виджет выбора начальной даты и времени
+        self.date_start = QDateTimeEdit()
+        self.date_start.setCalendarPopup(True)
+        self.date_start.setDisplayFormat('dd.MM.yyyy HH:mm')
+        self.date_start.setEnabled(False)
+        self.date_start.setStyleSheet('QDateTimeEdit { font-size: 10px; padding: 3px; }')
+        self.date_start.dateTimeChanged.connect(self.on_date_range_changed)
+        layout.addWidget(self.date_start)
+
+        # Метка "По:"
+        label_to = QLabel('По:')
+        label_to.setStyleSheet('QLabel { font-size: 11px; margin-left: 10px; }')
+        layout.addWidget(label_to)
+
+        # Виджет выбора конечной даты и времени
+        self.date_end = QDateTimeEdit()
+        self.date_end.setCalendarPopup(True)
+        self.date_end.setDisplayFormat('dd.MM.yyyy HH:mm')
+        self.date_end.setEnabled(False)
+        self.date_end.setStyleSheet('QDateTimeEdit { font-size: 10px; padding: 3px; }')
+        self.date_end.dateTimeChanged.connect(self.on_date_range_changed)
+        layout.addWidget(self.date_end)
+
+        # Кнопка сброса диапазона
+        self.btn_reset_range = QPushButton('🔄 Сбросить')
+        self.btn_reset_range.setEnabled(False)
+        self.btn_reset_range.clicked.connect(self.reset_date_range)
+        self.btn_reset_range.setStyleSheet('QPushButton { padding: 5px; font-size: 10px; margin-left: 10px; }')
+        self.btn_reset_range.setToolTip('Сбросить диапазон и показать все данные')
+        layout.addWidget(self.btn_reset_range)
+
+        # Кнопка применения диапазона
+        self.btn_apply_range = QPushButton('✓ Применить')
+        self.btn_apply_range.setEnabled(False)
+        self.btn_apply_range.clicked.connect(self.apply_date_range)
+        self.btn_apply_range.setStyleSheet('QPushButton { padding: 5px; font-size: 10px; background-color: #28a745; color: white; } QPushButton:disabled { background-color: #cccccc; }')
+        self.btn_apply_range.setToolTip('Применить выбранный диапазон к графикам')
+        layout.addWidget(self.btn_apply_range)
+
+        # Метка информации о диапазоне
+        self.date_range_info = QLabel('Выберите файлы и постройте графики для выбора диапазона')
+        self.date_range_info.setStyleSheet('QLabel { color: #6c757d; font-size: 10px; margin-left: 10px; }')
+        layout.addWidget(self.date_range_info)
+
+        layout.addStretch()
+
+        return panel
+
+    def toggle_date_range(self, checked):
+        """Включение/отключение фильтрации по диапазону дат"""
+        self.date_start.setEnabled(checked)
+        self.date_end.setEnabled(checked)
+        self.btn_apply_range.setEnabled(checked and len(self.plots) > 0)
+        self.btn_reset_range.setEnabled(checked)
+
+        if not checked:
+            # Если диапазон отключен, сбрасываем его
+            self.date_range_enabled = False
+            self.date_range_info.setText('Диапазон дат отключен')
+            self.date_range_info.setStyleSheet('QLabel { color: #6c757d; font-size: 10px; margin-left: 10px; }')
+        else:
+            self.date_range_info.setText('Выберите диапазон дат и нажмите "Применить"')
+            self.date_range_info.setStyleSheet('QLabel { color: #007bff; font-size: 10px; margin-left: 10px; }')
+
+    def on_date_range_changed(self):
+        """Обработчик изменения диапазона дат"""
+        if self.date_range_checkbox.isChecked():
+            start = self.date_start.dateTime().toPyDateTime()
+            end = self.date_end.dateTime().toPyDateTime()
+
+            if start >= end:
+                self.date_range_info.setText('⚠️ Начальная дата должна быть меньше конечной!')
+                self.date_range_info.setStyleSheet('QLabel { color: #dc3545; font-size: 10px; margin-left: 10px; font-weight: bold; }')
+                self.btn_apply_range.setEnabled(False)
+            else:
+                self.date_range_info.setText(f'Выбран диапазон: {start.strftime("%d.%m.%Y %H:%M")} - {end.strftime("%d.%m.%Y %H:%M")}')
+                self.date_range_info.setStyleSheet('QLabel { color: #28a745; font-size: 10px; margin-left: 10px; }')
+                self.btn_apply_range.setEnabled(True)
+
+    def reset_date_range(self):
+        """Сброс диапазона дат и отображение всех данных"""
+        self.date_range_enabled = False
+        self.date_range_checkbox.setChecked(False)
+        self.date_range_info.setText('Диапазон сброшен. Нажмите "Построить графики" для обновления')
+        self.date_range_info.setStyleSheet('QLabel { color: #28a745; font-size: 10px; margin-left: 10px; }')
+
+        # Автоматически перестроить графики если они уже были построены
+        if len(self.plots) > 0:
+            self.plot_data()
+
+    def apply_date_range(self):
+        """Применение выбранного диапазона дат"""
+        if not self.date_range_checkbox.isChecked():
+            return
+
+        start = self.date_start.dateTime().toPyDateTime()
+        end = self.date_end.dateTime().toPyDateTime()
+
+        if start >= end:
+            QMessageBox.warning(self, 'Ошибка', 'Начальная дата должна быть меньше конечной!')
+            return
+
+        self.date_range_enabled = True
+        self.date_range_start = pd.Timestamp(start)
+        self.date_range_end = pd.Timestamp(end)
+
+        self.date_range_info.setText(f'✓ Применен диапазон: {start.strftime("%d.%m.%Y %H:%M")} - {end.strftime("%d.%m.%Y %H:%M")}')
+        self.date_range_info.setStyleSheet('QLabel { color: #28a745; font-size: 10px; margin-left: 10px; font-weight: bold; }')
+
+        # Перестроить графики с новым диапазоном
+        self.plot_data()
+
+    def update_date_range_limits(self):
+        """Обновление пределов выбора дат на основе загруженных данных"""
+        if not self.data_files:
+            return
+
+        min_date = None
+        max_date = None
+
+        # Находим минимальную и максимальную даты во всех файлах
+        for file_type, file_data in self.data_files.items():
+            df = file_data['data']
+            time_col, _ = self.identify_columns(df)
+
+            if time_col:
+                try:
+                    # Пробуем распарсить даты
+                    time_data = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
+
+                    if not time_data.isna().all():
+                        file_min = time_data.min()
+                        file_max = time_data.max()
+
+                        if pd.notna(file_min):
+                            if min_date is None or file_min < min_date:
+                                min_date = file_min
+
+                        if pd.notna(file_max):
+                            if max_date is None or file_max > max_date:
+                                max_date = file_max
+                except:
+                    pass
+
+        if min_date and max_date:
+            # Устанавливаем пределы для виджетов выбора дат
+            from PyQt5.QtCore import QDateTime
+
+            self.date_start.setDateTimeRange(
+                QDateTime(min_date.year, min_date.month, min_date.day,
+                         min_date.hour, min_date.minute),
+                QDateTime(max_date.year, max_date.month, max_date.day,
+                         max_date.hour, max_date.minute)
+            )
+
+            self.date_end.setDateTimeRange(
+                QDateTime(min_date.year, min_date.month, min_date.day,
+                         min_date.hour, min_date.minute),
+                QDateTime(max_date.year, max_date.month, max_date.day,
+                         max_date.hour, max_date.minute)
+            )
+
+            # Устанавливаем начальные значения
+            self.date_start.setDateTime(
+                QDateTime(min_date.year, min_date.month, min_date.day,
+                         min_date.hour, min_date.minute)
+            )
+
+            self.date_end.setDateTime(
+                QDateTime(max_date.year, max_date.month, max_date.day,
+                         max_date.hour, max_date.minute)
+            )
+
+            self.date_range_info.setText(
+                f'Доступный диапазон: {min_date.strftime("%d.%m.%Y %H:%M")} - {max_date.strftime("%d.%m.%Y %H:%M")}'
+            )
+            self.date_range_info.setStyleSheet('QLabel { color: #007bff; font-size: 10px; margin-left: 10px; }')
 
     def debug_data_conversion(self, df, file_type):
         """ОТЛАДЧИК: Анализ преобразования данных из Excel файла"""
@@ -588,9 +1028,13 @@ class AnalyzerComparisonApp(QMainWindow):
                 if len(self.data_files) > 0:
                     self.btn_plot.setEnabled(True)
                     self.btn_debug.setEnabled(True)
+                    self.btn_filter_outliers.setEnabled(True)
 
                 # Обновляем селектор файлов в таблице
                 self.update_file_selector()
+
+                # Обновляем доступные диапазоны дат
+                self.update_date_range_limits()
 
             except Exception as e:
                 self.show_error(f'Ошибка при загрузке файла {file_type}: {str(e)}')
@@ -764,6 +1208,25 @@ class AnalyzerComparisonApp(QMainWindow):
                     max_date = time_data.max()
                     print(f"Диапазон дат для {gas_type}: {min_date} - {max_date} ({len(time_data)} записей)")
 
+                # Применяем фильтрацию по выбранному диапазону дат, если она включена
+                if self.date_range_enabled and self.date_range_start and self.date_range_end:
+                    print(f"Применяем фильтрацию по диапазону: {self.date_range_start} - {self.date_range_end}")
+
+                    # Создаем маску для фильтрации
+                    date_mask = (time_data >= self.date_range_start) & (time_data <= self.date_range_end)
+                    records_before = len(df_sorted)
+
+                    # Применяем фильтр
+                    df_sorted = df_sorted[date_mask].reset_index(drop=True)
+                    time_data = df_sorted['_temp_time']
+
+                    records_after = len(df_sorted)
+                    print(f"Отфильтровано записей: {records_before} -> {records_after} ({records_before - records_after} исключено)")
+
+                    if len(df_sorted) == 0:
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: После фильтрации по диапазону не осталось данных для {gas_type}!")
+                        continue
+
                 try:
                     timestamps = time_data.astype('int64') / 1e9
                 except Exception:
@@ -782,6 +1245,9 @@ class AnalyzerComparisonApp(QMainWindow):
             plot.setLabel('bottom', 'Дата и время')
             plot.showGrid(x=True, y=True, alpha=0.3)
             plot.addLegend()
+
+            # Словарь для хранения отфильтрованных данных (инициализируется до цикла)
+            current_filtered_data = {}
 
             # Построение линий для каждой колонки данных
             colors = ['b', 'r', 'g', 'm', 'c', 'y']
@@ -804,10 +1270,19 @@ class AnalyzerComparisonApp(QMainWindow):
                     print(f"\n🔧 Применяем ручное преобразование для точности...")
                     numeric_values = self.manual_numeric_conversion(original_values, col)
 
+                    # Применяем фильтр выбросов, если режим активен
+                    if self.filter_outliers_mode:
+                        print(f"🔧 Применяем фильтр выбросов (замена 0 и 1 на предыдущие значения)...")
+                        numeric_values = self.apply_outlier_filter(numeric_values)
+
+                    # Сохраняем отфильтрованные данные для использования в перекрестии и расчетах
+                    current_filtered_data[col] = numeric_values
+
                     # Дополнительная диагностика результата
                     valid_count = pd.notna(numeric_values).sum()
                     zero_count = (numeric_values == 0).sum()
-                    print(f"Результат преобразования: {valid_count} валидных, {zero_count} нулей")
+                    one_count = (numeric_values == 1).sum()
+                    print(f"Результат преобразования: {valid_count} валидных, {zero_count} нулей, {one_count} единиц")
 
                     # Проверяем, есть ли проблемные нули
                     if zero_count > 0:
@@ -882,7 +1357,8 @@ class AnalyzerComparisonApp(QMainWindow):
                 'time_data': time_data,
                 'time_col': time_col,  # Сохраняем название колонки времени
                 'data_cols': data_cols,
-                'df': df_sorted  # Используем отсортированный DataFrame
+                'df': df_sorted,  # Используем отсортированный DataFrame
+                'filtered_data': current_filtered_data  # Словарь отфильтрованных данных (с учетом фильтра выбросов)
             })
 
             # Подключение обработчика движения мыши
@@ -896,6 +1372,19 @@ class AnalyzerComparisonApp(QMainWindow):
                 self.plots[i]['plot'].setXLink(first_plot)
 
         self.info_label.setText('Графики построены. Наведите курсор для отображения значений.')
+
+        # Активация кнопок после построения графиков
+        if len(self.plots) > 0:
+            self.btn_selection_mode.setEnabled(True)
+            self.btn_clear_selection.setEnabled(False)
+            self.btn_scale_settings.setEnabled(True)
+
+        # Очистка старых выделений при перестроении графиков
+        self.clear_all_selections()
+
+        # Восстановить режим выборки, если он был активен
+        if self.selection_mode:
+            self.enable_selection_mode()
 
         # Обновляем таблицу данных, если файл уже выбран
         current_file = self.file_selector.currentText()
@@ -1001,6 +1490,10 @@ class AnalyzerComparisonApp(QMainWindow):
 
     def on_mouse_moved(self, pos):
         """Обработчик движения мыши для отображения перекрестия и значений"""
+        # Если активен режим выборки и есть результаты - не обновляем info_label
+        if self.selection_mode and len(self.selection_results) > 0:
+            return
+
         info_text = []
 
         # Находим график, над которым находится курсор
@@ -1067,15 +1560,23 @@ class AnalyzerComparisonApp(QMainWindow):
 
                     info_text.append(f"<b style='color: #2c3e50; font-size: 13px;'>{gas_type}</b>")
 
-                    # Поиск эталонного значения (Ametek)
+                    # Получаем отфильтрованные данные, если они есть
+                    filtered_data = plot_data.get('filtered_data', {})
+
+                    # Поиск эталонного значения (Ametek) из отфильтрованных данных
                     reference_value = None
                     reference_col = None
                     for col in plot_data['data_cols']:
                         col_lower = str(col).lower()
                         if 'ametek' in col_lower or 'амetek' in col_lower:
                             try:
-                                raw_ref_value = plot_data['df'][col].iloc[idx]
-                                reference_value = pd.to_numeric(raw_ref_value, errors='coerce')
+                                # Используем отфильтрованные данные, если они есть
+                                if col in filtered_data and len(filtered_data[col]) > idx:
+                                    reference_value = filtered_data[col][idx]
+                                else:
+                                    raw_ref_value = plot_data['df'][col].iloc[idx]
+                                    reference_value = pd.to_numeric(raw_ref_value, errors='coerce')
+
                                 if pd.notna(reference_value):
                                     reference_col = col
                                     break
@@ -1085,16 +1586,25 @@ class AnalyzerComparisonApp(QMainWindow):
                     # Значения параметров с процентной разницей
                     for col in plot_data['data_cols']:
                         try:
-                            # ИСПРАВЛЕНИЕ: Показываем ТОЧНО то значение, что в файле
-                            raw_value = plot_data['df'][col].iloc[idx]
-
-                            # Проверяем, является ли значение числом для расчетов
-                            numeric_value = pd.to_numeric(raw_value, errors='coerce')
+                            # Используем отфильтрованные данные, если они есть
+                            if col in filtered_data and len(filtered_data[col]) > idx:
+                                numeric_value = filtered_data[col][idx]
+                                # Показываем отфильтрованное значение
+                                display_value = numeric_value
+                            else:
+                                # Иначе берем из исходного DataFrame
+                                raw_value = plot_data['df'][col].iloc[idx]
+                                numeric_value = pd.to_numeric(raw_value, errors='coerce')
+                                display_value = raw_value if not pd.isna(raw_value) else numeric_value
 
                             if pd.notna(numeric_value):
-                                # Показываем исходное значение (как в файле), но используем числовое для расчетов
-                                display_value = raw_value if not pd.isna(raw_value) else numeric_value
-                                info_text.append(f"  <span style='color: #34495e;'>{col}:</span> <b style='color: #27ae60;'>{display_value}</b>")
+                                # Форматируем значение для отображения
+                                if isinstance(display_value, (int, float, np.number)):
+                                    display_str = f"{display_value:.4f}" if display_value != int(display_value) else f"{int(display_value)}"
+                                else:
+                                    display_str = str(display_value)
+
+                                info_text.append(f"  <span style='color: #34495e;'>{col}:</span> <b style='color: #27ae60;'>{display_str}</b>")
 
                                 # Расчет процентной разницы относительно Ametek
                                 if reference_value is not None and pd.notna(reference_value) and reference_col != col and reference_value != 0:
@@ -1107,8 +1617,8 @@ class AnalyzerComparisonApp(QMainWindow):
                                     except Exception as e:
                                         print(f"Ошибка расчета разности для {col}: {e}")
                             else:
-                                # Показываем исходное значение как есть, если это не число
-                                info_text.append(f"  <span style='color: #34495e;'>{col}:</span> <span style='color: #95a5a6;'>{raw_value}</span>")
+                                # Показываем как N/A, если это не число
+                                info_text.append(f"  <span style='color: #34495e;'>{col}:</span> <span style='color: #95a5a6;'>N/A</span>")
                         except Exception as e:
                             print(f"Ошибка обработки колонки {col} в перекрестии: {e}")
 
@@ -1133,6 +1643,7 @@ class AnalyzerComparisonApp(QMainWindow):
 
         self.btn_plot.setEnabled(False)
         self.btn_debug.setEnabled(False)
+        self.btn_filter_outliers.setEnabled(False)
         self.info_label.setText('Наведите курсор на график для отображения значений')
 
         # Очищаем таблицу и селектор
@@ -1145,6 +1656,18 @@ class AnalyzerComparisonApp(QMainWindow):
 
         # Очищаем выделения на графике
         self.clear_highlights()
+
+        # Очистка выделений диапазона
+        self.clear_all_selections()
+
+        # Выход из режима выборки
+        if self.selection_mode:
+            self.btn_selection_mode.setChecked(False)
+            self.toggle_selection_mode(False)
+
+        # Деактивация кнопок выборки
+        self.btn_selection_mode.setEnabled(False)
+        self.btn_clear_selection.setEnabled(False)
 
     def show_data_debugger(self):
         """Показ визуального отладчика данных"""
@@ -1315,6 +1838,932 @@ class AnalyzerComparisonApp(QMainWindow):
             except:
                 pass
         self.highlight_items.clear()
+
+    # ==================== МЕТОДЫ ФИЛЬТРАЦИИ ВЫБРОСОВ ====================
+
+    def get_filter_button_style(self, active):
+        """Получить стиль для кнопки фильтрации выбросов"""
+        if active:
+            return '''
+                QPushButton {
+                    background-color: #e67e22;
+                    color: white;
+                    padding: 8px;
+                    font-size: 11px;
+                    border: 2px solid #d35400;
+                    font-weight: bold;
+                }
+            '''
+        else:
+            return '''
+                QPushButton {
+                    background-color: #ecf0f1;
+                    color: #2c3e50;
+                    padding: 8px;
+                    font-size: 11px;
+                    border: 2px solid #bdc3c7;
+                }
+                QPushButton:disabled {
+                    background-color: #cccccc;
+                    color: #7f8c8d;
+                }
+            '''
+
+    def toggle_filter_outliers(self, checked):
+        """Переключение режима фильтрации выбросов"""
+        self.filter_outliers_mode = checked
+
+        # Обновить внешний вид кнопки
+        self.btn_filter_outliers.setStyleSheet(self.get_filter_button_style(checked))
+
+        if checked:
+            self.btn_filter_outliers.setText('🔧 Фильтр выбросов (ВКЛ)')
+            print("\n[FILTER] Режим фильтрации выбросов ВКЛЮЧЕН")
+            print("[FILTER] Нули и единицы будут заменены на предыдущие значения")
+        else:
+            self.btn_filter_outliers.setText('🔧 Фильтр выбросов (0/1)')
+            print("\n[FILTER] Режим фильтрации выбросов ВЫКЛЮЧЕН")
+
+        # Автоматически перестроить графики, если данные загружены
+        if len(self.plots) > 0:
+            print("[FILTER] Перестроение графиков с новыми настройками...")
+            self.plot_data()
+
+    def apply_outlier_filter(self, numeric_values):
+        """
+        Фильтрация выбросов: замена нулей и единиц на предыдущие валидные значения
+
+        Args:
+            numeric_values: numpy array с числовыми значениями
+
+        Returns:
+            numpy array с отфильтрованными значениями
+        """
+        filtered_values = numeric_values.copy()
+        last_valid_value = None
+        replaced_count = 0
+
+        for i in range(len(filtered_values)):
+            current_value = filtered_values[i]
+
+            # Если текущее значение валидное (не NaN)
+            if pd.notna(current_value):
+                # Проверяем, является ли оно 0 или 1 (выброс)
+                if current_value == 0 or current_value == 1:
+                    # Если есть предыдущее валидное значение, используем его
+                    if last_valid_value is not None:
+                        filtered_values[i] = last_valid_value
+                        replaced_count += 1
+                    # Если предыдущего нет, оставляем как есть (или можно заменить на NaN)
+                else:
+                    # Сохраняем последнее валидное значение (не 0 и не 1)
+                    last_valid_value = current_value
+
+        if replaced_count > 0:
+            print(f"  [FILTER] Заменено значений: {replaced_count} (нулей/единиц на предыдущие)")
+
+        return filtered_values
+
+    def open_scale_settings(self):
+        """Открыть диалог настройки шкал приборов"""
+        dialog = ScaleSettingsDialog(self, self.analyzer_scales)
+        if dialog.exec_() == QDialog.Accepted:
+            self.analyzer_scales = dialog.get_scales()
+            print("\n[SCALES] Настройки шкал приборов обновлены:")
+            for gas_type, analyzers in self.analyzer_scales.items():
+                print(f"  {gas_type}:")
+                for analyzer, settings in analyzers.items():
+                    scale = settings.get('scale', 'не указано')
+                    accuracy = settings.get('accuracy_class', 'не указано')
+                    print(f"    {analyzer}: шкала={scale} мг/м³, класс точности={accuracy}%")
+
+    # ==================== МЕТОДЫ ВЫБОРКИ ДИАПАЗОНА ====================
+
+    def get_button_style(self, active):
+        """Получить стиль для кнопки режима выборки в зависимости от состояния"""
+        if active:
+            return '''
+                QPushButton {
+                    background-color: #3498db;
+                    color: white;
+                    padding: 8px;
+                    font-size: 11px;
+                    border: 2px solid #2980b9;
+                    font-weight: bold;
+                }
+            '''
+        else:
+            return '''
+                QPushButton {
+                    background-color: #ecf0f1;
+                    color: #2c3e50;
+                    padding: 8px;
+                    font-size: 11px;
+                    border: 2px solid #bdc3c7;
+                }
+                QPushButton:disabled {
+                    background-color: #cccccc;
+                    color: #7f8c8d;
+                }
+            '''
+
+    def toggle_selection_mode(self, checked):
+        """Переключение режима выборки"""
+        self.selection_mode = checked
+
+        # Обновить внешний вид кнопки
+        self.btn_selection_mode.setStyleSheet(self.get_button_style(checked))
+
+        if checked:
+            # Вход в режим выборки
+            self.btn_selection_mode.setText('🎯 Режим выборки (активен)')
+            # Показываем результаты если они есть, иначе инструкцию
+            if len(self.selection_results) == 0:
+                self.info_label.setText(
+                    '<b style="color: #3498db;">🎯 РЕЖИМ ВЫБОРКИ АКТИВЕН</b><br>'
+                    'Перетащите мышью на графике для выбора диапазона.<br>'
+                    'Нажмите кнопку снова для выхода из режима.'
+                )
+            self.enable_selection_mode()
+        else:
+            # Выход из режима выборки
+            self.btn_selection_mode.setText('🎯 Режим выборки')
+            self.info_label.setText(
+                'Режим выборки отключен. '
+                'Наведите курсор на график для отображения значений.'
+            )
+            self.disable_selection_mode()
+
+    def enable_selection_mode(self):
+        """Активация режима выборки на всех графиках"""
+        # Защита от повторной инициализации
+        if len(self.original_mouse_handlers) > 0:
+            print("[SELECTION] Обработчики уже установлены, пропускаем")
+            return
+
+        print(f"[SELECTION] Устанавливаем обработчики для {len(self.plots)} графиков")
+
+        for i, plot_data in enumerate(self.plots):
+            plot = plot_data['plot']
+            vb = plot.vb
+
+            # Сохранить оригинальные обработчики событий мыши и режим мыши
+            self.original_mouse_handlers.append({
+                'plot_index': i,
+                'press': vb.mousePressEvent,
+                'move': vb.mouseMoveEvent,
+                'release': vb.mouseReleaseEvent,
+                'mouseEnabled': (vb.state['mouseEnabled'][0], vb.state['mouseEnabled'][1])
+            })
+
+            # Создаём обёртки, которые НЕ вызывают оригинальные обработчики
+            def make_press_handler(idx):
+                original_handler = vb.mousePressEvent
+                def handler(evt):
+                    print(f"[SELECTION] Press event на графике {idx}, mode={self.selection_mode}")
+                    if self.selection_mode:
+                        self.selection_mouse_press(evt, idx)
+                    else:
+                        original_handler(evt)
+                return handler
+
+            def make_move_handler(idx):
+                original_handler = vb.mouseMoveEvent
+                def handler(evt):
+                    if self.selection_mode:
+                        self.selection_mouse_move(evt, idx)
+                    else:
+                        original_handler(evt)
+                return handler
+
+            def make_release_handler(idx):
+                original_handler = vb.mouseReleaseEvent
+                def handler(evt):
+                    print(f"[SELECTION] Release event на графике {idx}, mode={self.selection_mode}")
+                    if self.selection_mode:
+                        self.selection_mouse_release(evt, idx)
+                    else:
+                        original_handler(evt)
+                return handler
+
+            # Установить кастомные обработчики
+            vb.mousePressEvent = make_press_handler(i)
+            vb.mouseMoveEvent = make_move_handler(i)
+            vb.mouseReleaseEvent = make_release_handler(i)
+
+            print(f"[SELECTION] Обработчики установлены для графика {i}")
+
+    def disable_selection_mode(self):
+        """Деактивация режима выборки и восстановление обычного поведения"""
+        # Восстановить оригинальные обработчики событий
+        for handler_info in self.original_mouse_handlers:
+            idx = handler_info['plot_index']
+            if idx < len(self.plots):
+                plot = self.plots[idx]['plot']
+                vb = plot.vb
+
+                vb.mousePressEvent = handler_info['press']
+                vb.mouseMoveEvent = handler_info['move']
+                vb.mouseReleaseEvent = handler_info['release']
+
+        self.original_mouse_handlers.clear()
+
+    def selection_mouse_press(self, evt, plot_index):
+        """Обработчик нажатия мыши в режиме выборки"""
+        if not self.selection_mode:
+            return
+
+        if evt.button() == Qt.LeftButton:
+            # Принять событие только для левой кнопки
+            evt.accept()
+
+            # Получить позицию мыши в координатах графика
+            plot_data = self.plots[plot_index]
+            plot = plot_data['plot']
+            pos = evt.pos()
+            mouse_point = plot.vb.mapToView(pos)
+
+            # Сохранить начальную позицию
+            self.selection_start_x = mouse_point.x()
+            self.selection_plot_index = plot_index
+
+            print(f"[SELECTION] Начало выборки на графике {plot_index}, X={self.selection_start_x}")
+
+            # Очистить предыдущие выделения на ВСЕХ графиках
+            self.clear_all_selections()
+
+            # Создать области выделения на ВСЕХ графиках
+            for i in range(len(self.plots)):
+                region = self.create_selection_region(i, self.selection_start_x, self.selection_start_x)
+                print(f"[SELECTION] Создан регион на графике {i}")
+
+    def selection_mouse_move(self, evt, plot_index):
+        """Обработчик движения мыши в режиме выборки"""
+        if not self.selection_mode or self.selection_start_x is None:
+            return
+
+        if plot_index != self.selection_plot_index:
+            return
+
+        # Принять событие
+        evt.accept()
+
+        # Обновить область выделения
+        plot_data = self.plots[plot_index]
+        plot = plot_data['plot']
+        pos = evt.pos()
+        mouse_point = plot.vb.mapToView(pos)
+        current_x = mouse_point.x()
+
+        # Обновить границы LinearRegionItem на ВСЕХ графиках
+        updated_count = 0
+        for i, plot_info in enumerate(self.plots):
+            plot_obj = plot_info['plot']
+            # Найти LinearRegionItem для этого графика
+            for item in plot_obj.items:
+                if isinstance(item, pg.LinearRegionItem):
+                    item.setRegion([self.selection_start_x, current_x])
+                    updated_count += 1
+                    break
+
+        if updated_count == 0:
+            print(f"[WARNING] Не найдено LinearRegionItem для обновления!")
+
+    def selection_mouse_release(self, evt, plot_index):
+        """Обработчик отпускания мыши - завершение выделения"""
+        if not self.selection_mode or self.selection_start_x is None:
+            return
+
+        # Принять событие, чтобы оно не передавалось дальше
+        evt.accept()
+
+        if evt.button() == Qt.LeftButton and plot_index == self.selection_plot_index:
+            # Получить финальную позицию
+            plot_data = self.plots[plot_index]
+            plot = plot_data['plot']
+            pos = evt.pos()
+            mouse_point = plot.vb.mapToView(pos)
+            end_x = mouse_point.x()
+
+            # Убедиться что start < end
+            x_start = min(self.selection_start_x, end_x)
+            x_end = max(self.selection_start_x, end_x)
+
+            # Валидация: проверить минимальную ширину
+            if abs(x_end - x_start) < 1e-6:
+                # Слишком маленькое выделение, игнорировать
+                self.clear_all_selections()
+                self.info_label.setText(
+                    '<span style="color: #e74c3c;">Выбор слишком мал. '
+                    'Попробуйте еще раз.</span>'
+                )
+            else:
+                # Обработать выделение для ВСЕХ графиков и рассчитать результаты
+                self.process_all_selections(x_start, x_end)
+
+            # Очистить временные переменные
+            self.selection_start_x = None
+            self.selection_plot_index = None
+
+    def create_selection_region(self, plot_index, x_start, x_end):
+        """Создать LinearRegionItem для визуального выделения"""
+        plot = self.plots[plot_index]['plot']
+
+        # Создать область выделения
+        region = pg.LinearRegionItem(
+            values=[x_start, x_end],
+            orientation='vertical',
+            brush=pg.mkBrush(100, 149, 237, 50),  # Полупрозрачный синий
+            pen=pg.mkPen('b', width=2),
+            movable=False,  # Не разрешать перемещение во время создания
+            bounds=None
+        )
+
+        plot.addItem(region)
+
+        # Сохраняем регион в список (для последующего управления)
+        self.temp_selection_regions.append(region)
+
+        return region
+
+    def clear_selection_on_plot(self, plot_index):
+        """Удалить выделение с конкретного графика"""
+        if plot_index >= len(self.plots):
+            return
+
+        plot = self.plots[plot_index]['plot']
+
+        # Найти и удалить все LinearRegionItem с этого графика
+        regions_to_remove = []
+        for item in plot.items:
+            if isinstance(item, pg.LinearRegionItem):
+                regions_to_remove.append(item)
+
+        for region in regions_to_remove:
+            plot.removeItem(region)
+            if region in self.selection_regions:
+                self.selection_regions.remove(region)
+
+        # Очистить сохраненные результаты
+        if plot_index in self.selection_results:
+            del self.selection_results[plot_index]
+
+        # Обновить info_label если больше нет результатов
+        if len(self.selection_results) == 0 and self.selection_mode:
+            self.info_label.setText(
+                '<b style="color: #3498db;">🎯 РЕЖИМ ВЫБОРКИ АКТИВЕН</b><br>'
+                'Перетащите мышью на графике для выбора диапазона.<br>'
+                'Нажмите кнопку снова для выхода из режима.'
+            )
+
+    def clear_all_selections(self):
+        """Удалить все выделения со всех графиков"""
+        for i in range(len(self.plots)):
+            self.clear_selection_on_plot(i)
+
+        self.selection_regions.clear()
+        self.selection_results.clear()
+        self.temp_selection_regions.clear()
+        self.btn_clear_selection.setEnabled(False)
+
+        # Восстановить сообщение в info_label
+        if self.selection_mode:
+            self.info_label.setText(
+                '<b style="color: #3498db;">🎯 РЕЖИМ ВЫБОРКИ АКТИВЕН</b><br>'
+                'Перетащите мышью на графике для выбора диапазона.<br>'
+                'Нажмите кнопку снова для выхода из режима.'
+            )
+        else:
+            self.info_label.setText(
+                'Наведите курсор на график для отображения значений.'
+            )
+
+    def extract_range_data(self, plot_data, x_start, x_end):
+        """Извлечь данные точек в выделенном диапазоне
+
+        Использует сохраненные отфильтрованные данные из plot_data['filtered_data'],
+        чтобы расчеты точно соответствовали отображаемым на графике значениям.
+        """
+        timestamps = plot_data['timestamps']
+        data_cols = plot_data['data_cols']
+        filtered_data = plot_data.get('filtered_data', {})
+
+        # Найти индексы точек в диапазоне
+        if isinstance(timestamps, pd.Series):
+            mask = (timestamps >= x_start) & (timestamps <= x_end)
+            indices = timestamps.index[mask].tolist()
+        else:
+            mask = (timestamps >= x_start) & (timestamps <= x_end)
+            indices = np.where(mask)[0]
+
+        if len(indices) == 0:
+            return None
+
+        # Извлечь значения для каждого столбца
+        extracted_data = {}
+        for col in data_cols:
+            # Используем сохраненные отфильтрованные данные, если они есть
+            if col in filtered_data and len(filtered_data[col]) > 0:
+                # Берем отфильтрованные значения по индексам
+                numeric_values = filtered_data[col][indices]
+            else:
+                # Если отфильтрованных данных нет (старый формат), преобразуем из df
+                df = plot_data['df']
+                raw_values = df[col].iloc[indices]
+                numeric_values = self.manual_numeric_conversion(raw_values, col)
+
+                # Применяем фильтр, если режим активен (для обратной совместимости)
+                if self.filter_outliers_mode:
+                    numeric_values = self.apply_outlier_filter(numeric_values)
+
+            # Сохраняем полный массив с NaN (для корреляции нужны одинаковые длины)
+            # Проверяем что есть хотя бы одно валидное значение
+            if np.isfinite(numeric_values).any():
+                extracted_data[col] = numeric_values
+
+        return extracted_data if len(extracted_data) > 0 else None
+
+    def calculate_averages(self, extracted_data):
+        """Рассчитать статистические меры для каждого столбца"""
+        results = {}
+        for col, values in extracted_data.items():
+            # Фильтруем NaN и бесконечности для расчета статистики
+            valid_values = values[np.isfinite(values)]
+
+            if len(valid_values) > 0:
+                results[col] = {
+                    'mean': float(np.mean(valid_values)),
+                    'count': int(len(valid_values)),
+                    'std': float(np.std(valid_values)),
+                    'min': float(np.min(valid_values)),
+                    'max': float(np.max(valid_values)),
+                    'median': float(np.median(valid_values))
+                }
+        return results
+
+    def calculate_comparisons(self, averages, extracted_data, gas_type=None):
+        """Рассчитать попарные сравнения между всеми анализаторами с коэффициентом корреляции
+
+        Для каждой пары анализаторов рассчитывается:
+        - Абсолютная разница средних значений
+        - Относительная разница (в процентах) - если в паре есть Ametek, он используется как база,
+          иначе используется первый элемент пары
+        - Коэффициент корреляции Пирсона
+        - Приведенная погрешность (если настроены шкалы приборов)
+        """
+        from itertools import combinations
+
+        comparisons = []
+        col_names = list(averages.keys())
+
+        if len(col_names) < 2:
+            return comparisons
+
+        # Проходим по всем возможным парам анализаторов
+        for col1, col2 in combinations(col_names, 2):
+            mean1 = averages[col1]['mean']
+            mean2 = averages[col2]['mean']
+
+            # Определяем базу для расчета процентной разницы:
+            # Если один из элементов - Ametek, используем его как базу
+            col1_lower = col1.lower()
+            col2_lower = col2.lower()
+            is_col1_reference = 'ametek' in col1_lower or 'амetek' in col1_lower
+            is_col2_reference = 'ametek' in col2_lower or 'амetek' in col2_lower
+
+            if is_col1_reference:
+                # col1 (Ametek) - база, считаем отклонение col2 от него
+                base_mean = mean1
+                compared_mean = mean2
+                diff_abs = mean2 - mean1
+            elif is_col2_reference:
+                # col2 (Ametek) - база, меняем порядок: col2 становится первым
+                col1, col2 = col2, col1
+                mean1, mean2 = mean2, mean1
+                base_mean = mean1
+                compared_mean = mean2
+                diff_abs = mean2 - mean1
+            else:
+                # Оба не эталоны - используем col1 как базу
+                base_mean = mean1
+                compared_mean = mean2
+                diff_abs = mean2 - mean1
+
+            # Относительная разница (в процентах) относительно базового значения
+            if base_mean != 0:
+                diff_pct = (diff_abs / base_mean) * 100
+            else:
+                diff_pct = np.nan if diff_abs != 0 else 0.0
+
+            # Расчет коэффициента корреляции Пирсона
+            correlation = np.nan
+            try:
+                # Получаем данные для обеих колонок
+                data1 = extracted_data.get(col1)
+                data2 = extracted_data.get(col2)
+
+                if data1 is not None and data2 is not None and len(data1) > 1 and len(data2) > 1:
+                    # Находим общие индексы (на случай если длины разные)
+                    min_len = min(len(data1), len(data2))
+                    data1_aligned = data1[:min_len]
+                    data2_aligned = data2[:min_len]
+
+                    # Убираем NaN и бесконечности
+                    valid_mask = np.isfinite(data1_aligned) & np.isfinite(data2_aligned)
+                    if valid_mask.sum() > 1:  # Нужно минимум 2 точки для корреляции
+                        data1_clean = data1_aligned[valid_mask]
+                        data2_clean = data2_aligned[valid_mask]
+
+                        # Рассчитываем коэффициент корреляции Пирсона
+                        corr_matrix = np.corrcoef(data1_clean, data2_clean)
+                        correlation = corr_matrix[0, 1]
+            except Exception as e:
+                print(f"Ошибка при расчете корреляции для {col1} vs {col2}: {e}")
+                correlation = np.nan
+
+            # Расчет приведенной погрешности
+            # Формула: ((значение2 - значение1) / максимальная_шкала) × 100%
+            reduced_error = None
+
+            if gas_type and gas_type in self.analyzer_scales:
+                scale1 = None
+                scale2 = None
+
+                # Получаем шкалу для col1
+                if col1 in self.analyzer_scales[gas_type]:
+                    settings1 = self.analyzer_scales[gas_type][col1]
+                    scale1 = settings1.get('scale')
+
+                # Получаем шкалу для col2
+                if col2 in self.analyzer_scales[gas_type]:
+                    settings2 = self.analyzer_scales[gas_type][col2]
+                    scale2 = settings2.get('scale')
+
+                # Рассчитываем приведенную погрешность, если есть хотя бы одна шкала
+                if scale1 is not None or scale2 is not None:
+                    # Находим максимальную шкалу из доступных
+                    max_scale = None
+                    if scale1 is not None and scale2 is not None:
+                        max_scale = max(scale1, scale2)
+                    elif scale1 is not None:
+                        max_scale = scale1
+                    elif scale2 is not None:
+                        max_scale = scale2
+
+                    if max_scale is not None and max_scale != 0:
+                        # Приведенная погрешность = (абсолютная разница / максимальная шкала) × 100%
+                        reduced_error = (diff_abs / max_scale) * 100.0
+
+            comparisons.append({
+                'pair': (col1, col2),
+                'mean1': mean1,
+                'mean2': mean2,
+                'diff_abs': diff_abs,
+                'diff_pct': diff_pct,
+                'count1': averages[col1]['count'],
+                'count2': averages[col2]['count'],
+                'correlation': correlation,
+                'reduced_error': reduced_error  # Приведенная погрешность: (разница / макс шкала) × 100%
+            })
+
+        return comparisons
+
+    def format_selection_results(self, gas_type, x_start, x_end, averages, comparisons, plot_data):
+        """Форматировать результаты выборки для отображения в info_label"""
+        lines = []
+
+        # Заголовок
+        lines.append("<b style='font-size: 14px; color: #2980b9;'>📊 РЕЗУЛЬТАТЫ ВЫБОРКИ</b>")
+        lines.append(f"<b>Газ:</b> {gas_type}")
+
+        # Временной диапазон
+        time_data = plot_data.get('time_data')
+        if time_data is not None:
+            try:
+                start_dt = pd.Timestamp(x_start, unit='s')
+                end_dt = pd.Timestamp(x_end, unit='s')
+                start_str = start_dt.strftime('%d.%m.%Y %H:%M:%S')
+                end_str = end_dt.strftime('%d.%m.%Y %H:%M:%S')
+            except:
+                start_str = f"{x_start:.2f}"
+                end_str = f"{x_end:.2f}"
+        else:
+            start_str = f"Индекс {int(x_start)}"
+            end_str = f"Индекс {int(x_end)}"
+
+        lines.append(f"<b>📅 Период:</b> {start_str} → {end_str}")
+        lines.append("")
+
+        # Средние значения
+        lines.append("<b style='color: #27ae60;'>Средние значения:</b>")
+        for col, stats in averages.items():
+            lines.append(
+                f"  • <b>{col}:</b> {stats['mean']:.4f} мг/м³ "
+                f"<span style='color: #7f8c8d; font-size: 10px;'>"
+                f"(n={stats['count']})</span>"
+            )
+
+        # Сравнения
+        if len(comparisons) > 0:
+            lines.append("")
+            lines.append("<b style='color: #e74c3c;'>Сравнение пар анализаторов:</b>")
+
+            for comp in comparisons:
+                col1, col2 = comp['pair']
+                diff_abs = comp['diff_abs']
+                diff_pct = comp['diff_pct']
+                correlation = comp.get('correlation', np.nan)
+
+                # Цвет в зависимости от величины разницы
+                if pd.isna(diff_pct):
+                    color = '#95a5a6'
+                    pct_str = 'N/A'
+                elif abs(diff_pct) > 10:
+                    color = '#e74c3c'  # Красный
+                    pct_str = f"{diff_pct:+.2f}%"
+                elif abs(diff_pct) > 5:
+                    color = '#f39c12'  # Оранжевый
+                    pct_str = f"{diff_pct:+.2f}%"
+                else:
+                    color = '#27ae60'  # Зеленый
+                    pct_str = f"{diff_pct:+.2f}%"
+
+                # Форматирование коэффициента корреляции
+                if pd.notna(correlation):
+                    corr_str = f"r={correlation:.4f}"
+                else:
+                    corr_str = "r=N/A"
+
+                # Форматирование приведенной погрешности
+                reduced_error = comp.get('reduced_error')
+                error_str = ""
+                if reduced_error is not None:
+                    error_str = f", <span style='color: #9C27B0;'>γ={reduced_error:.2f}%</span>"
+
+                lines.append(
+                    f"  • <b>{col2}</b> vs <b>{col1}:</b> "
+                    f"<span style='color: {color};'>{diff_abs:+.4f} мг/м³ ({pct_str})</span>, "
+                    f"<span style='color: #3498db;'>{corr_str}</span>"
+                    f"{error_str}"
+                )
+
+        return '<br>'.join(lines)
+
+    def format_all_selection_results(self, x_start, x_end, results_by_plot):
+        """Форматировать результаты выборки для всех графиков в две колонки"""
+
+        # Временной диапазон (общий для всех)
+        if results_by_plot and results_by_plot[0]['plot_data'].get('time_data') is not None:
+            try:
+                start_dt = pd.Timestamp(x_start, unit='s')
+                end_dt = pd.Timestamp(x_end, unit='s')
+                start_str = start_dt.strftime('%d.%m.%Y %H:%M:%S')
+                end_str = end_dt.strftime('%d.%m.%Y %H:%M:%S')
+            except:
+                start_str = f"{x_start:.2f}"
+                end_str = f"{x_end:.2f}"
+        else:
+            start_str = f"Индекс {int(x_start)}"
+            end_str = f"Индекс {int(x_end)}"
+
+        # Начинаем HTML таблицу
+        html = f"""
+        <div style='font-size: 11px;'>
+            <div style='text-align: center; margin-bottom: 5px;'>
+                <b style='font-size: 12px; color: #2980b9;'>📊 РЕЗУЛЬТАТЫ ВЫБОРКИ ДЛЯ ВСЕХ ГРАФИКОВ</b><br>
+                <b>Период:</b> {start_str} → {end_str}
+            </div>
+            <table width='100%' cellspacing='0' cellpadding='3' style='border-collapse: collapse;'>
+                <tr>
+        """
+
+        # Создаём колонки для каждого графика
+        for result in results_by_plot:
+            gas_type = result['gas_type']
+            averages = result['averages']
+            comparisons = result['comparisons']
+
+            # Начало колонки
+            html += f"""
+                    <td width='50%' valign='top' style='padding: 3px; border: 1px solid #d0d0d0;'>
+                        <b style='color: #2c3e50; font-size: 12px;'>▶ {gas_type}</b><br>
+                        <b style='color: #27ae60; font-size: 10px;'>Средние значения:</b><br>
+            """
+
+            # Средние значения
+            for col, stats in averages.items():
+                html += f"""
+                        <span style='font-size: 10px;'>• <b>{col}:</b> {stats['mean']:.4f} мг/м³
+                        <span style='color: #7f8c8d; font-size: 9px;'>(n={stats['count']})</span></span><br>
+                """
+
+            # Сравнения
+            if len(comparisons) > 0:
+                html += """
+                        <b style='color: #e74c3c; font-size: 10px;'>Сравнение пар анализаторов:</b><br>
+                """
+
+                for comp in comparisons:
+                    col1, col2 = comp['pair']
+                    diff_abs = comp['diff_abs']
+                    diff_pct = comp['diff_pct']
+                    correlation = comp.get('correlation', np.nan)
+
+                    # Цвет в зависимости от величины разницы
+                    if pd.isna(diff_pct):
+                        color = '#95a5a6'
+                        pct_str = 'N/A'
+                    elif abs(diff_pct) > 10:
+                        color = '#e74c3c'  # Красный
+                        pct_str = f"{diff_pct:+.2f}%"
+                    elif abs(diff_pct) > 5:
+                        color = '#f39c12'  # Оранжевый
+                        pct_str = f"{diff_pct:+.2f}%"
+                    else:
+                        color = '#27ae60'  # Зеленый
+                        pct_str = f"{diff_pct:+.2f}%"
+
+                    # Форматирование коэффициента корреляции
+                    if pd.notna(correlation):
+                        corr_str = f"r={correlation:.4f}"
+                    else:
+                        corr_str = "r=N/A"
+
+                    # Форматирование приведенной погрешности
+                    reduced_error = comp.get('reduced_error')
+                    error_str = ""
+                    if reduced_error is not None:
+                        error_str = f", <span style='color: #9C27B0;'>γ={reduced_error:.2f}%</span>"
+
+                    html += f"""
+                        <span style='font-size: 10px;'>• <b>{col2}</b> vs <b>{col1}:</b>
+                        <span style='color: {color};'>{diff_abs:+.4f} мг/м³ ({pct_str})</span>,
+                        <span style='color: #3498db;'>{corr_str}</span>{error_str}</span><br>
+                    """
+
+            # Конец колонки
+            html += """
+                    </td>
+            """
+
+        # Закрываем таблицу
+        html += """
+                </tr>
+            </table>
+        </div>
+        """
+
+        return html
+
+    def process_all_selections(self, x_start, x_end):
+        """Обработать выделение для всех графиков одновременно"""
+        results_by_plot = []
+
+        for plot_index in range(len(self.plots)):
+            plot_data = self.plots[plot_index]
+            gas_type = plot_data['gas_type']
+
+            # Извлечь данные в диапазоне
+            extracted_data = self.extract_range_data(plot_data, x_start, x_end)
+
+            if not extracted_data or len(extracted_data) == 0:
+                continue
+
+            # Рассчитать средние значения
+            averages = self.calculate_averages(extracted_data)
+
+            # Рассчитать попарные сравнения с корреляцией и приведенной погрешностью
+            comparisons = self.calculate_comparisons(averages, extracted_data, gas_type)
+
+            # Сохранить результаты
+            self.selection_results[plot_index] = {
+                'gas_type': gas_type,
+                'range': (x_start, x_end),
+                'averages': averages,
+                'comparisons': comparisons
+            }
+
+            results_by_plot.append({
+                'plot_index': plot_index,
+                'gas_type': gas_type,
+                'averages': averages,
+                'comparisons': comparisons,
+                'plot_data': plot_data
+            })
+
+        # Форматировать и отобразить результаты для всех графиков
+        if results_by_plot:
+            formatted_text = self.format_all_selection_results(x_start, x_end, results_by_plot)
+            self.info_label.setText(formatted_text)
+
+            # Сделать LinearRegionItem перемещаемыми после создания
+            for region in self.temp_selection_regions:
+                region.setMovable(True)
+                self.selection_regions.append(region)
+
+                # Подключить сигнал для автоматического пересчета при изменении
+                # Используем lambda с замыканием для передачи всех графиков
+                region.sigRegionChanged.connect(self.on_any_selection_region_changed)
+
+            self.temp_selection_regions.clear()
+
+            # Активировать кнопку очистки
+            self.btn_clear_selection.setEnabled(True)
+        else:
+            self.info_label.setText(
+                '<span style="color: #e74c3c;">В выбранном диапазоне нет данных.</span>'
+            )
+            self.clear_all_selections()
+
+    def process_selection(self, plot_index, x_start, x_end):
+        """Обработать выделение: извлечь данные, рассчитать и отобразить результаты"""
+        plot_data = self.plots[plot_index]
+        gas_type = plot_data['gas_type']
+
+        # Извлечь данные в диапазоне
+        extracted_data = self.extract_range_data(plot_data, x_start, x_end)
+
+        if not extracted_data or len(extracted_data) == 0:
+            self.info_label.setText(
+                '<span style="color: #e74c3c;">В выбранном диапазоне нет данных.</span>'
+            )
+            self.clear_selection_on_plot(plot_index)
+            return
+
+        # Рассчитать средние значения
+        averages = self.calculate_averages(extracted_data)
+
+        # Рассчитать попарные сравнения с корреляцией и приведенной погрешностью
+        comparisons = self.calculate_comparisons(averages, extracted_data, gas_type)
+
+        # Форматировать и отобразить результаты
+        formatted_text = self.format_selection_results(
+            gas_type, x_start, x_end, averages, comparisons, plot_data
+        )
+        self.info_label.setText(formatted_text)
+
+        # Сохранить результаты
+        self.selection_results[plot_index] = {
+            'gas_type': gas_type,
+            'range': (x_start, x_end),
+            'averages': averages,
+            'comparisons': comparisons,
+            'formatted_text': formatted_text
+        }
+
+        # Сделать LinearRegionItem перемещаемым после создания
+        if self.current_selection_region:
+            self.current_selection_region.setMovable(True)
+            self.selection_regions.append(self.current_selection_region)
+
+            # Подключить сигнал для автоматического пересчета при изменении
+            self.current_selection_region.sigRegionChanged.connect(
+                lambda: self.on_selection_region_changed(plot_index)
+            )
+
+            self.current_selection_region = None
+
+        # Активировать кнопку очистки
+        self.btn_clear_selection.setEnabled(True)
+
+    def on_any_selection_region_changed(self):
+        """Обработчик изменения любого выделения (пользователь переместил/изменил размер)"""
+        # Получаем новые границы из первого региона (все синхронизированы)
+        if len(self.selection_regions) == 0:
+            return
+
+        first_region = self.selection_regions[0]
+        x_start, x_end = first_region.getRegion()
+
+        # Синхронизируем все регионы
+        for region in self.selection_regions[1:]:
+            region.setRegion([x_start, x_end])
+
+        # Пересчитать для всех графиков с новыми границами
+        self.process_all_selections(x_start, x_end)
+
+    def on_selection_region_changed(self, plot_index):
+        """Обработчик изменения выделения (пользователь переместил/изменил размер)"""
+        if plot_index >= len(self.plots):
+            return
+
+        plot = self.plots[plot_index]['plot']
+
+        # Найти LinearRegionItem для этого графика
+        region = None
+        for item in plot.items:
+            if isinstance(item, pg.LinearRegionItem):
+                region = item
+                break
+
+        if region is None:
+            return
+
+        # Получить новые границы
+        x_start, x_end = region.getRegion()
+
+        # Пересчитать с новыми границами
+        self.process_selection(plot_index, x_start, x_end)
 
     def show_error(self, message):
         """Отображение сообщения об ошибке"""
