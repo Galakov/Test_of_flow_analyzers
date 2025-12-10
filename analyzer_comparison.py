@@ -17,6 +17,19 @@ from PyQt5.QtGui import QFont
 import pyqtgraph as pg
 from pyqtgraph import DateAxisItem
 from datetime import datetime
+import logging
+from analyzer_logic import AnalyzerLogic
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("analyzer_debug.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class DataDebuggerDialog(QDialog):
     """Визуальный отладчик данных"""
@@ -533,6 +546,9 @@ class AnalyzerComparisonApp(QMainWindow):
         self.date_range_start = None  # Начало диапазона
         self.date_range_end = None  # Конец диапазона
 
+        # Инициализация логики
+        self.logic = AnalyzerLogic()
+
         self.init_ui()
 
     def init_ui(self):
@@ -872,27 +888,20 @@ class AnalyzerComparisonApp(QMainWindow):
 
         # Находим минимальную и максимальную даты во всех файлах
         for file_type, file_data in self.data_files.items():
-            df = file_data['data']
-            time_col, _ = self.identify_columns(df)
+            # Используем уже распарсенные даты
+            time_data = file_data.get('parsed_dates')
+            
+            if time_data is not None and not time_data.isna().all():
+                file_min = time_data.min()
+                file_max = time_data.max()
 
-            if time_col:
-                try:
-                    # Пробуем распарсить даты
-                    time_data = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
+                if pd.notna(file_min):
+                    if min_date is None or file_min < min_date:
+                        min_date = file_min
 
-                    if not time_data.isna().all():
-                        file_min = time_data.min()
-                        file_max = time_data.max()
-
-                        if pd.notna(file_min):
-                            if min_date is None or file_min < min_date:
-                                min_date = file_min
-
-                        if pd.notna(file_max):
-                            if max_date is None or file_max > max_date:
-                                max_date = file_max
-                except:
-                    pass
+                if pd.notna(file_max):
+                    if max_date is None or file_max > max_date:
+                        max_date = file_max
 
         if min_date and max_date:
             # Устанавливаем пределы для виджетов выбора дат
@@ -934,7 +943,7 @@ class AnalyzerComparisonApp(QMainWindow):
         print("=" * 60)
 
         # Определяем колонки данных
-        time_col, data_cols = self.identify_columns(df)
+        time_col, data_cols = self.logic.identify_columns(df)
 
         if data_cols and len(data_cols) > 0:
             test_col = data_cols[0]  # Берем первую колонку для анализа
@@ -1010,10 +1019,24 @@ class AnalyzerComparisonApp(QMainWindow):
                 # ЗАПУСК ОТЛАДЧИКА
                 self.debug_data_conversion(df, file_type)
 
+                # Определяем колонки
+                time_col, data_cols = self.logic.identify_columns(df)
+                
+                # Парсим даты сразу при загрузке
+                parsed_dates = None
+                if time_col:
+                    logger.info(f"Парсинг дат для {file_type} (колонка {time_col})...")
+                    parsed_dates = self.logic.parse_dates(df[time_col])
+                    valid_dates = parsed_dates.notna().sum()
+                    logger.info(f"Успешно распарсено дат: {valid_dates}/{len(df)}")
+
                 # Сохранение данных
                 self.data_files[file_type] = {
                     'path': file_path,
-                    'data': df
+                    'data': df,
+                    'time_col': time_col,
+                    'data_cols': data_cols,
+                    'parsed_dates': parsed_dates
                 }
 
                 # Обновление метки статуса
@@ -1049,256 +1072,101 @@ class AnalyzerComparisonApp(QMainWindow):
         # Определение количества графиков
         plot_configs = []
 
-        if 'H2S' in self.data_files:
-            df_h2s = self.data_files['H2S']['data']
-            # Поиск колонок с временем и данными
-            time_col, data_cols = self.identify_columns(df_h2s)
-            if time_col and data_cols:
-                plot_configs.append(('H2S', df_h2s, time_col, data_cols))
-
-        if 'SO2' in self.data_files:
-            df_so2 = self.data_files['SO2']['data']
-            time_col, data_cols = self.identify_columns(df_so2)
-            if time_col and data_cols:
-                plot_configs.append(('SO2', df_so2, time_col, data_cols))
+        for gas_type in ['H2S', 'SO2']:
+            if gas_type in self.data_files:
+                file_data = self.data_files[gas_type]
+                df = file_data['data']
+                time_col = file_data.get('time_col')
+                data_cols = file_data.get('data_cols')
+                parsed_dates = file_data.get('parsed_dates')
+                
+                if time_col and data_cols:
+                    plot_configs.append((gas_type, df, time_col, data_cols, parsed_dates))
 
         if not plot_configs:
             self.show_error('Не удалось определить структуру данных')
             return
 
         # Создание графиков
-        for i, (gas_type, df, time_col, data_cols) in enumerate(plot_configs):
-            # Преобразование времени в timestamp с расширенной логикой
-            time_data = None  # Инициализация переменной
-
-            # 1) Прямая попытка (учет dayfirst)
-            # Пробуем разные варианты парсинга для максимальной совместимости
-            parsed = None
-            try:
-                # Сначала пробуем с dayfirst=True (формат ДД.ММ.ГГГГ)
-                parsed = pd.to_datetime(df[time_col], dayfirst=True, errors='coerce')
-                invalid_count = parsed.isna().sum()
-
-                # Если много невалидных значений, пробуем без dayfirst
-                if invalid_count > len(df) * 0.3:  # Если больше 30% невалидных
-                    parsed_alt = pd.to_datetime(df[time_col], dayfirst=False, errors='coerce')
-                    # Используем вариант с меньшим количеством ошибок
-                    if parsed_alt.isna().sum() < invalid_count:
-                        parsed = parsed_alt
-                        print(f"Использован парсинг без dayfirst (меньше ошибок: {parsed_alt.isna().sum()} vs {invalid_count})")
-
-                # Дополнительная проверка: если есть невалидные значения, пробуем парсить их отдельно
-                # Это важно, если формат времени меняется в середине файла
-                if parsed.isna().any():
-                    invalid_mask = parsed.isna()
-                    invalid_indices = df.index[invalid_mask]
-                    invalid_values = df.loc[invalid_mask, time_col]
-
-                    print(f"  Обнаружено {invalid_mask.sum()} нераспарсенных дат, пробуем другие форматы...")
-
-                    # Пробуем разные форматы для невалидных значений
-                    # ВАЖНО: добавлен формат '%d.%m.%Y %H:%M' для дат БЕЗ секунд
-                    formats_to_try = [
-                        '%d.%m.%Y %H:%M',         # КРИТИЧНО: формат без секунд (17.11.2025 0:00)
-                        '%d.%m.%Y %H:%M:%S',
-                        '%d/%m/%Y %H:%M:%S',
-                        '%d/%m/%Y %H:%M',
-                        '%Y-%m-%d %H:%M:%S',
-                        '%Y-%m-%d %H:%M',
-                        '%d.%m.%Y',
-                        '%Y.%m.%d %H:%M:%S',
-                        '%d-%m-%Y %H:%M:%S'
-                    ]
-
-                    for fmt in formats_to_try:
-                        # Проверяем только те, что еще не распарсены
-                        current_invalid = parsed.isna()
-                        if not current_invalid.any():
-                            break  # Все распарсено
-
-                        current_invalid_values = df.loc[current_invalid, time_col]
-                        try:
-                            parsed_manual = pd.to_datetime(current_invalid_values, format=fmt, errors='coerce')
-                            # Заменяем успешно распарсенные значения
-                            success_mask = parsed_manual.notna()
-                            if success_mask.any():
-                                success_indices = current_invalid_values.index[success_mask]
-                                parsed.loc[success_indices] = parsed_manual[success_mask]
-                                print(f"  [OK] Восстановлено {success_mask.sum()} записей с форматом {fmt}")
-                        except Exception as e:
-                            pass
-
-                    # Финальная проверка: если все еще есть невалидные, пробуем infer_datetime_format
-                    if parsed.isna().any():
-                        remaining_invalid = df.loc[parsed.isna(), time_col]
-                        try:
-                            parsed_infer = pd.to_datetime(remaining_invalid, infer_datetime_format=True, errors='coerce')
-                            success_mask = parsed_infer.notna()
-                            if success_mask.any():
-                                remaining_indices = df.index[parsed.isna()][success_mask]
-                                parsed.loc[remaining_indices] = parsed_infer[success_mask]
-                                print(f"  Восстановлено {success_mask.sum()} записей с автоматическим определением формата")
-                        except:
-                            pass
-
-            except Exception as e:
-                print(f"Ошибка при парсинге времени: {e}")
-                parsed = pd.Series([pd.NaT] * len(df))
-
-            # 2) Если всё NaT, пытаемся распознать числа (Unix sec/ms или Excel serial)
-            if parsed.isna().all():
-                numeric = pd.to_numeric(df[time_col], errors='coerce')
-                if numeric.notna().any():
-                    if numeric.median() > 1e12:
-                        # Вероятно миллисекунды Unix
-                        try:
-                            parsed = pd.to_datetime(numeric, unit='ms', errors='coerce')
-                        except Exception:
-                            pass
-                    elif numeric.median() > 1e9:
-                        # Вероятно секунды Unix
-                        try:
-                            parsed = pd.to_datetime(numeric, unit='s', errors='coerce')
-                        except Exception:
-                            pass
-                    elif 20000 < numeric.median() < 60000:
-                        # Вероятно Excel serial days
-                        try:
-                            parsed = pd.to_datetime(numeric, unit='D', origin='1899-12-30', errors='coerce')
-                        except Exception:
-                            pass
-
-            # 3) Если удалось получить даты, используем DateAxisItem с единым форматом, иначе индексы
-            if parsed.isna().all():
-                time_data = None
-                timestamps = np.arange(len(df))
-                plot = self.plot_widget.addPlot(row=i, col=0)  # обычная числовая ось
-                # Создаем копию DataFrame для сортировки (по индексу)
-                df_sorted = df.copy()
-            else:
-                time_data = parsed
-                # СОРТИРОВКА ДАННЫХ ПО ВРЕМЕНИ - критично для корректного отображения графика
+        for i, (gas_type, df, time_col, data_cols, parsed_dates) in enumerate(plot_configs):
+            # Используем распарсенные даты
+            time_data = parsed_dates
+            
+            # СОРТИРОВКА ДАННЫХ ПО ВРЕМЕНИ
+            if time_data is not None:
                 # Создаем временную колонку для сортировки
                 df_sorted = df.copy()
                 df_sorted['_temp_time'] = time_data
 
-                # Проверяем, сколько данных будет потеряно при фильтрации
-                valid_time_count = df_sorted['_temp_time'].notna().sum()
-                total_count = len(df_sorted)
-                if valid_time_count < total_count:
-                    print(f"Предупреждение: {total_count - valid_time_count} записей с невалидным временем будут исключены")
-
-                # Удаляем строки с невалидным временем перед сортировкой
-                # ВАЖНО: сохраняем все данные, даже если время не распарсилось
+                # Удаляем строки с невалидным временем
                 df_sorted = df_sorted[df_sorted['_temp_time'].notna()].copy()
 
-                # Проверяем, что остались данные
                 if len(df_sorted) == 0:
-                    print(f"ОШИБКА: Все записи имеют невалидное время!")
+                    logger.error(f"Все записи для {gas_type} имеют невалидное время!")
                     continue
 
-                # Сортируем по времени
+                # Сортируем
                 df_sorted = df_sorted.sort_values('_temp_time').reset_index(drop=True)
-                # Обновляем time_data после сортировки
                 time_data = df_sorted['_temp_time']
 
-                # Отладочная информация о диапазоне дат
-                if len(time_data) > 0:
-                    min_date = time_data.min()
-                    max_date = time_data.max()
-                    print(f"Диапазон дат для {gas_type}: {min_date} - {max_date} ({len(time_data)} записей)")
-
-                # Применяем фильтрацию по выбранному диапазону дат, если она включена
+                # Фильтрация по диапазону
                 if self.date_range_enabled and self.date_range_start and self.date_range_end:
-                    print(f"Применяем фильтрацию по диапазону: {self.date_range_start} - {self.date_range_end}")
-
-                    # Создаем маску для фильтрации
+                    logger.info(f"Применяем фильтр дат: {self.date_range_start} - {self.date_range_end}")
                     date_mask = (time_data >= self.date_range_start) & (time_data <= self.date_range_end)
-                    records_before = len(df_sorted)
-
-                    # Применяем фильтр
                     df_sorted = df_sorted[date_mask].reset_index(drop=True)
                     time_data = df_sorted['_temp_time']
 
-                    records_after = len(df_sorted)
-                    print(f"Отфильтровано записей: {records_before} -> {records_after} ({records_before - records_after} исключено)")
-
                     if len(df_sorted) == 0:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: После фильтрации по диапазону не осталось данных для {gas_type}!")
+                        logger.warning(f"После фильтрации нет данных для {gas_type}")
                         continue
 
                 try:
                     timestamps = time_data.astype('int64') / 1e9
-                except Exception:
+                except:
                     timestamps = time_data.view('int64') / 1e9
 
                 class FixedDateAxis(DateAxisItem):
                     def tickStrings(self, values, scale, spacing):  # noqa: N802
                         from datetime import datetime as _dt
-                        # Единый формат для всех графиков
                         return [_dt.utcfromtimestamp(v).strftime('%d.%m.%Y %H:%M:%S') for v in values]
 
                 axis = FixedDateAxis(orientation='bottom')
                 plot = self.plot_widget.addPlot(row=i, col=0, axisItems={'bottom': axis})
+            else:
+                # Если дат нет, используем индексы
+                time_data = None
+                timestamps = np.arange(len(df))
+                plot = self.plot_widget.addPlot(row=i, col=0)
+                df_sorted = df.copy()
 
             plot.setLabel('left', f'{gas_type} концентрация', units='мг/м³')
             plot.setLabel('bottom', 'Дата и время')
             plot.showGrid(x=True, y=True, alpha=0.3)
             plot.addLegend()
 
-            # Словарь для хранения отфильтрованных данных (инициализируется до цикла)
+            # Словарь для хранения отфильтрованных данных
             current_filtered_data = {}
 
-            # Построение линий для каждой колонки данных
+            # Построение линий
             colors = ['b', 'r', 'g', 'm', 'c', 'y']
             for j, col in enumerate(data_cols):
                 try:
-                    # Получаем исходные значения из отсортированного DataFrame
                     original_values = df_sorted[col]
+                    
+                    # Используем логику для преобразования (векторизованно)
+                    numeric_values = self.logic.manual_numeric_conversion(original_values)
 
-                    print(f"\n--- ОБРАБОТКА КОЛОНКИ {col} ---")
-                    print(f"Тип данных: {original_values.dtype}")
-                    print(f"Всего значений: {len(original_values)}")
-
-                    # Показываем первые значения для диагностики
-                    print("Первые 5 исходных значений:")
-                    for i in range(min(5, len(original_values))):
-                        val = original_values.iloc[i]
-                        print(f"  [{i}] '{val}' (тип: {type(val).__name__})")
-
-                    # ИСПРАВЛЕНИЕ: Сразу применяем правильное преобразование с поддержкой запятых
-                    print(f"\n🔧 Применяем ручное преобразование для точности...")
-                    numeric_values = self.manual_numeric_conversion(original_values, col)
-
-                    # Применяем фильтр выбросов, если режим активен
+                    # Фильтр выбросов
                     if self.filter_outliers_mode:
-                        print(f"🔧 Применяем фильтр выбросов (замена 0 и 1 на предыдущие значения)...")
-                        numeric_values = self.apply_outlier_filter(numeric_values)
+                        numeric_values = self.logic.apply_outlier_filter(numeric_values)
 
-                    # Сохраняем отфильтрованные данные для использования в перекрестии и расчетах
                     current_filtered_data[col] = numeric_values
 
-                    # Дополнительная диагностика результата
-                    valid_count = pd.notna(numeric_values).sum()
-                    zero_count = (numeric_values == 0).sum()
-                    one_count = (numeric_values == 1).sum()
-                    print(f"Результат преобразования: {valid_count} валидных, {zero_count} нулей, {one_count} единиц")
-
-                    # Проверяем, есть ли проблемные нули
-                    if zero_count > 0:
-                        print("Анализ нулевых значений:")
-                        zero_indices = np.where(numeric_values == 0)[0][:3]
-                        for zi in zero_indices:
-                            if zi < len(original_values):
-                                orig_val = original_values.iloc[zi]
-                                print(f"  Исходное '{orig_val}' -> 0 (корректно: {orig_val == 0 or orig_val == '0'})")
-
-                    # Создаем маску ПОСЛЕ преобразования
+                    # Маска валидных данных
                     can_plot_mask = pd.notna(numeric_values) & np.isfinite(numeric_values)
-
-                    # Проверяем длину данных
+                    
+                    # Выравнивание длин
                     if len(timestamps) != len(numeric_values):
-                        print(f"[WARNING] Несоответствие длины: timestamps={len(timestamps)}, values={len(numeric_values)}")
                         min_len = min(len(timestamps), len(numeric_values))
                         timestamps_aligned = timestamps[:min_len]
                         numeric_aligned = numeric_values[:min_len]
@@ -1308,38 +1176,23 @@ class AnalyzerComparisonApp(QMainWindow):
                         numeric_aligned = numeric_values
                         can_plot_aligned = can_plot_mask
 
-                    # Применяем маску для получения валидных данных
                     if isinstance(timestamps_aligned, pd.Series):
                         valid_timestamps = timestamps_aligned[can_plot_aligned].values
                     else:
                         valid_timestamps = timestamps_aligned[can_plot_aligned]
-
+                        
                     valid_values = numeric_aligned[can_plot_aligned]
 
-                    # Статистика
-                    print(f"Валидных значений для графика: {len(valid_values)}")
                     if len(valid_values) > 0:
-                        zero_count = (valid_values == 0).sum()
-                        non_zero_count = (valid_values != 0).sum()
-                        min_val = np.nanmin(valid_values)
-                        max_val = np.nanmax(valid_values)
-                        print(f"  Нулей: {zero_count}, Ненулевых: {non_zero_count}")
-                        print(f"  Диапазон: {min_val:.4f} - {max_val:.4f}")
-
-                        # Построение графика со ВСЕМИ валидными данными
                         color = colors[j % len(colors)]
                         plot.plot(np.array(valid_timestamps), np.array(valid_values),
                                 pen=pg.mkPen(color, width=2), name=col)
-                        print(f"  [OK] График построен с {len(valid_values)} точками")
                     else:
-                        print(f"  [WARNING] Нет данных для построения графика")
+                        logger.warning(f"Нет валидных данных для {col}")
 
                 except Exception as e:
-                    print(f"Ошибка при построении {col}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"Ошибка построения {col}: {e}")
 
-            # Удаляем временную колонку из отсортированного DataFrame (если она была создана)
             if '_temp_time' in df_sorted.columns:
                 df_sorted = df_sorted.drop(columns=['_temp_time'])
 
@@ -1355,138 +1208,35 @@ class AnalyzerComparisonApp(QMainWindow):
                 'gas_type': gas_type,
                 'timestamps': timestamps,
                 'time_data': time_data,
-                'time_col': time_col,  # Сохраняем название колонки времени
+                'time_col': time_col,
                 'data_cols': data_cols,
-                'df': df_sorted,  # Используем отсортированный DataFrame
-                'filtered_data': current_filtered_data  # Словарь отфильтрованных данных (с учетом фильтра выбросов)
+                'df': df_sorted,
+                'filtered_data': current_filtered_data
             })
 
-            # Подключение обработчика движения мыши
             plot.scene().sigMouseMoved.connect(self.on_mouse_moved)
 
-        # Синхронизация осей X всех графиков
+        # Синхронизация осей
         if len(self.plots) > 1:
-            # Связываем все графики по оси X с первым графиком
             first_plot = self.plots[0]['plot']
             for i in range(1, len(self.plots)):
                 self.plots[i]['plot'].setXLink(first_plot)
 
         self.info_label.setText('Графики построены. Наведите курсор для отображения значений.')
 
-        # Активация кнопок после построения графиков
         if len(self.plots) > 0:
             self.btn_selection_mode.setEnabled(True)
             self.btn_clear_selection.setEnabled(False)
             self.btn_scale_settings.setEnabled(True)
 
-        # Очистка старых выделений при перестроении графиков
         self.clear_all_selections()
-
-        # Восстановить режим выборки, если он был активен
         if self.selection_mode:
             self.enable_selection_mode()
 
-        # Обновляем таблицу данных, если файл уже выбран
         current_file = self.file_selector.currentText()
         if current_file != 'Выберите файл...' and current_file in self.data_files:
             self.populate_data_table(current_file)
 
-    def manual_numeric_conversion(self, series, column_name=""):
-        """
-        Ручное преобразование значений в числа без использования pd.to_numeric
-        Сохраняет точные значения из файла
-        """
-        result = []
-        problems = []
-
-        for i, val in enumerate(series):
-            try:
-                if pd.isna(val) or val == '' or val == ' ':
-                    result.append(np.nan)
-                elif isinstance(val, (int, float)):
-                    # Уже число
-                    result.append(float(val))
-                elif isinstance(val, str):
-                    # Строка - пробуем преобразовать
-                    cleaned = val.strip()
-                    if cleaned == '':
-                        result.append(np.nan)
-                    else:
-                        # Заменяем запятые на точки (русский формат)
-                        cleaned = cleaned.replace(',', '.')
-                        try:
-                            num_val = float(cleaned)
-                            result.append(num_val)
-                        except ValueError:
-                            problems.append((i, val))
-                            result.append(np.nan)
-                else:
-                    # Другой тип - пробуем преобразовать через str
-                    try:
-                        str_val = str(val).strip().replace(',', '.')
-                        num_val = float(str_val)
-                        result.append(num_val)
-                    except (ValueError, TypeError):
-                        problems.append((i, val))
-                        result.append(np.nan)
-            except Exception as e:
-                problems.append((i, val, str(e)))
-                result.append(np.nan)
-
-        if problems:
-            print(f"  {column_name}: {len(problems)} значений не удалось преобразовать:")
-            for item in problems[:3]:
-                if len(item) == 2:
-                    idx, val = item
-                    print(f"    [{idx}] '{val}' (тип: {type(val).__name__})")
-                else:
-                    idx, val, error = item
-                    print(f"    [{idx}] '{val}' -> Ошибка: {error}")
-
-        return np.array(result)
-
-    def identify_columns(self, df):
-        """Определение колонок с временем и данными"""
-        time_col = None
-        data_cols = []
-
-        # Список колонок, которые нужно исключить из отображения
-        exclude_keywords = ['tagname', 'tag_name', 'тег', 'название']
-
-        # Поиск колонки времени
-        time_keywords = ['время', 'time', 'дата', 'date', 'timestamp', 'datetime']
-        for col in df.columns:
-            col_lower = str(col).lower()
-            if any(keyword in col_lower for keyword in time_keywords):
-                time_col = col
-                break
-
-        # Если не найдена колонка времени, берем первую
-        if time_col is None and len(df.columns) > 0:
-            time_col = df.columns[0]
-
-        # Остальные числовые колонки считаем данными (исключая TagName и подобные)
-        for col in df.columns:
-            col_lower = str(col).lower()
-
-            # Пропускаем колонку времени
-            if col == time_col:
-                continue
-
-            # Пропускаем колонки из списка исключений
-            if any(keyword in col_lower for keyword in exclude_keywords):
-                continue
-
-            # Проверяем, является ли колонка числовой
-            try:
-                numeric_data = pd.to_numeric(df[col], errors='coerce')
-                # Если есть хотя бы одно числовое значение, добавляем колонку
-                if numeric_data.notna().any():
-                    data_cols.append(col)
-            except:
-                pass
-
-        return time_col, data_cols
 
     def on_mouse_moved(self, pos):
         """Обработчик движения мыши для отображения перекрестия и значений"""
@@ -1889,40 +1639,6 @@ class AnalyzerComparisonApp(QMainWindow):
             print("[FILTER] Перестроение графиков с новыми настройками...")
             self.plot_data()
 
-    def apply_outlier_filter(self, numeric_values):
-        """
-        Фильтрация выбросов: замена нулей и единиц на предыдущие валидные значения
-
-        Args:
-            numeric_values: numpy array с числовыми значениями
-
-        Returns:
-            numpy array с отфильтрованными значениями
-        """
-        filtered_values = numeric_values.copy()
-        last_valid_value = None
-        replaced_count = 0
-
-        for i in range(len(filtered_values)):
-            current_value = filtered_values[i]
-
-            # Если текущее значение валидное (не NaN)
-            if pd.notna(current_value):
-                # Проверяем, является ли оно 0 или 1 (выброс)
-                if current_value == 0 or current_value == 1:
-                    # Если есть предыдущее валидное значение, используем его
-                    if last_valid_value is not None:
-                        filtered_values[i] = last_valid_value
-                        replaced_count += 1
-                    # Если предыдущего нет, оставляем как есть (или можно заменить на NaN)
-                else:
-                    # Сохраняем последнее валидное значение (не 0 и не 1)
-                    last_valid_value = current_value
-
-        if replaced_count > 0:
-            print(f"  [FILTER] Заменено значений: {replaced_count} (нулей/единиц на предыдущие)")
-
-        return filtered_values
 
     def open_scale_settings(self):
         """Открыть диалог настройки шкал приборов"""
@@ -2238,195 +1954,6 @@ class AnalyzerComparisonApp(QMainWindow):
                 'Наведите курсор на график для отображения значений.'
             )
 
-    def extract_range_data(self, plot_data, x_start, x_end):
-        """Извлечь данные точек в выделенном диапазоне
-
-        Использует сохраненные отфильтрованные данные из plot_data['filtered_data'],
-        чтобы расчеты точно соответствовали отображаемым на графике значениям.
-        """
-        timestamps = plot_data['timestamps']
-        data_cols = plot_data['data_cols']
-        filtered_data = plot_data.get('filtered_data', {})
-
-        # Найти индексы точек в диапазоне
-        if isinstance(timestamps, pd.Series):
-            mask = (timestamps >= x_start) & (timestamps <= x_end)
-            indices = timestamps.index[mask].tolist()
-        else:
-            mask = (timestamps >= x_start) & (timestamps <= x_end)
-            indices = np.where(mask)[0]
-
-        if len(indices) == 0:
-            return None
-
-        # Извлечь значения для каждого столбца
-        extracted_data = {}
-        for col in data_cols:
-            # Используем сохраненные отфильтрованные данные, если они есть
-            if col in filtered_data and len(filtered_data[col]) > 0:
-                # Берем отфильтрованные значения по индексам
-                numeric_values = filtered_data[col][indices]
-            else:
-                # Если отфильтрованных данных нет (старый формат), преобразуем из df
-                df = plot_data['df']
-                raw_values = df[col].iloc[indices]
-                numeric_values = self.manual_numeric_conversion(raw_values, col)
-
-                # Применяем фильтр, если режим активен (для обратной совместимости)
-                if self.filter_outliers_mode:
-                    numeric_values = self.apply_outlier_filter(numeric_values)
-
-            # Сохраняем полный массив с NaN (для корреляции нужны одинаковые длины)
-            # Проверяем что есть хотя бы одно валидное значение
-            if np.isfinite(numeric_values).any():
-                extracted_data[col] = numeric_values
-
-        return extracted_data if len(extracted_data) > 0 else None
-
-    def calculate_averages(self, extracted_data):
-        """Рассчитать статистические меры для каждого столбца"""
-        results = {}
-        for col, values in extracted_data.items():
-            # Фильтруем NaN и бесконечности для расчета статистики
-            valid_values = values[np.isfinite(values)]
-
-            if len(valid_values) > 0:
-                results[col] = {
-                    'mean': float(np.mean(valid_values)),
-                    'count': int(len(valid_values)),
-                    'std': float(np.std(valid_values)),
-                    'min': float(np.min(valid_values)),
-                    'max': float(np.max(valid_values)),
-                    'median': float(np.median(valid_values))
-                }
-        return results
-
-    def calculate_comparisons(self, averages, extracted_data, gas_type=None):
-        """Рассчитать попарные сравнения между всеми анализаторами с коэффициентом корреляции
-
-        Для каждой пары анализаторов рассчитывается:
-        - Абсолютная разница средних значений
-        - Относительная разница (в процентах) - если в паре есть Ametek, он используется как база,
-          иначе используется первый элемент пары
-        - Коэффициент корреляции Пирсона
-        - Приведенная погрешность (если настроены шкалы приборов)
-        """
-        from itertools import combinations
-
-        comparisons = []
-        col_names = list(averages.keys())
-
-        if len(col_names) < 2:
-            return comparisons
-
-        # Проходим по всем возможным парам анализаторов
-        for col1, col2 in combinations(col_names, 2):
-            mean1 = averages[col1]['mean']
-            mean2 = averages[col2]['mean']
-
-            # Определяем базу для расчета процентной разницы:
-            # Если один из элементов - Ametek, используем его как базу
-            col1_lower = col1.lower()
-            col2_lower = col2.lower()
-            is_col1_reference = 'ametek' in col1_lower or 'амetek' in col1_lower
-            is_col2_reference = 'ametek' in col2_lower or 'амetek' in col2_lower
-
-            if is_col1_reference:
-                # col1 (Ametek) - база, считаем отклонение col2 от него
-                base_mean = mean1
-                compared_mean = mean2
-                diff_abs = mean2 - mean1
-            elif is_col2_reference:
-                # col2 (Ametek) - база, меняем порядок: col2 становится первым
-                col1, col2 = col2, col1
-                mean1, mean2 = mean2, mean1
-                base_mean = mean1
-                compared_mean = mean2
-                diff_abs = mean2 - mean1
-            else:
-                # Оба не эталоны - используем col1 как базу
-                base_mean = mean1
-                compared_mean = mean2
-                diff_abs = mean2 - mean1
-
-            # Относительная разница (в процентах) относительно базового значения
-            if base_mean != 0:
-                diff_pct = (diff_abs / base_mean) * 100
-            else:
-                diff_pct = np.nan if diff_abs != 0 else 0.0
-
-            # Расчет коэффициента корреляции Пирсона
-            correlation = np.nan
-            try:
-                # Получаем данные для обеих колонок
-                data1 = extracted_data.get(col1)
-                data2 = extracted_data.get(col2)
-
-                if data1 is not None and data2 is not None and len(data1) > 1 and len(data2) > 1:
-                    # Находим общие индексы (на случай если длины разные)
-                    min_len = min(len(data1), len(data2))
-                    data1_aligned = data1[:min_len]
-                    data2_aligned = data2[:min_len]
-
-                    # Убираем NaN и бесконечности
-                    valid_mask = np.isfinite(data1_aligned) & np.isfinite(data2_aligned)
-                    if valid_mask.sum() > 1:  # Нужно минимум 2 точки для корреляции
-                        data1_clean = data1_aligned[valid_mask]
-                        data2_clean = data2_aligned[valid_mask]
-
-                        # Рассчитываем коэффициент корреляции Пирсона
-                        corr_matrix = np.corrcoef(data1_clean, data2_clean)
-                        correlation = corr_matrix[0, 1]
-            except Exception as e:
-                print(f"Ошибка при расчете корреляции для {col1} vs {col2}: {e}")
-                correlation = np.nan
-
-            # Расчет приведенной погрешности
-            # Формула: ((значение2 - значение1) / максимальная_шкала) × 100%
-            reduced_error = None
-
-            if gas_type and gas_type in self.analyzer_scales:
-                scale1 = None
-                scale2 = None
-
-                # Получаем шкалу для col1
-                if col1 in self.analyzer_scales[gas_type]:
-                    settings1 = self.analyzer_scales[gas_type][col1]
-                    scale1 = settings1.get('scale')
-
-                # Получаем шкалу для col2
-                if col2 in self.analyzer_scales[gas_type]:
-                    settings2 = self.analyzer_scales[gas_type][col2]
-                    scale2 = settings2.get('scale')
-
-                # Рассчитываем приведенную погрешность, если есть хотя бы одна шкала
-                if scale1 is not None or scale2 is not None:
-                    # Находим максимальную шкалу из доступных
-                    max_scale = None
-                    if scale1 is not None and scale2 is not None:
-                        max_scale = max(scale1, scale2)
-                    elif scale1 is not None:
-                        max_scale = scale1
-                    elif scale2 is not None:
-                        max_scale = scale2
-
-                    if max_scale is not None and max_scale != 0:
-                        # Приведенная погрешность = (абсолютная разница / максимальная шкала) × 100%
-                        reduced_error = (diff_abs / max_scale) * 100.0
-
-            comparisons.append({
-                'pair': (col1, col2),
-                'mean1': mean1,
-                'mean2': mean2,
-                'diff_abs': diff_abs,
-                'diff_pct': diff_pct,
-                'count1': averages[col1]['count'],
-                'count2': averages[col2]['count'],
-                'correlation': correlation,
-                'reduced_error': reduced_error  # Приведенная погрешность: (разница / макс шкала) × 100%
-            })
-
-        return comparisons
 
     def format_selection_results(self, gas_type, x_start, x_end, averages, comparisons, plot_data):
         """Форматировать результаты выборки для отображения в info_label"""
@@ -2624,16 +2151,28 @@ class AnalyzerComparisonApp(QMainWindow):
             gas_type = plot_data['gas_type']
 
             # Извлечь данные в диапазоне
-            extracted_data = self.extract_range_data(plot_data, x_start, x_end)
+            timestamps = plot_data['timestamps']
+            filtered_data = plot_data['filtered_data']
+            data_cols = plot_data['data_cols']
+            
+            extracted_data = {}
+            for col in data_cols:
+                if col in filtered_data:
+                    values = filtered_data[col]
+                    extracted = self.logic.extract_range_data(timestamps, values, x_start, x_end)
+                    if extracted is not None:
+                        extracted_data[col] = extracted
 
             if not extracted_data or len(extracted_data) == 0:
                 continue
 
             # Рассчитать средние значения
-            averages = self.calculate_averages(extracted_data)
+            averages = self.logic.calculate_averages(extracted_data)
 
             # Рассчитать попарные сравнения с корреляцией и приведенной погрешностью
-            comparisons = self.calculate_comparisons(averages, extracted_data, gas_type)
+            comparisons = self.logic.calculate_comparisons(
+                averages, extracted_data, self.analyzer_scales, gas_type
+            )
 
             # Сохранить результаты
             self.selection_results[plot_index] = {
@@ -2681,7 +2220,17 @@ class AnalyzerComparisonApp(QMainWindow):
         gas_type = plot_data['gas_type']
 
         # Извлечь данные в диапазоне
-        extracted_data = self.extract_range_data(plot_data, x_start, x_end)
+        timestamps = plot_data['timestamps']
+        filtered_data = plot_data['filtered_data']
+        data_cols = plot_data['data_cols']
+        
+        extracted_data = {}
+        for col in data_cols:
+            if col in filtered_data:
+                values = filtered_data[col]
+                extracted = self.logic.extract_range_data(timestamps, values, x_start, x_end)
+                if extracted is not None:
+                    extracted_data[col] = extracted
 
         if not extracted_data or len(extracted_data) == 0:
             self.info_label.setText(
@@ -2691,10 +2240,12 @@ class AnalyzerComparisonApp(QMainWindow):
             return
 
         # Рассчитать средние значения
-        averages = self.calculate_averages(extracted_data)
+        averages = self.logic.calculate_averages(extracted_data)
 
         # Рассчитать попарные сравнения с корреляцией и приведенной погрешностью
-        comparisons = self.calculate_comparisons(averages, extracted_data, gas_type)
+        comparisons = self.logic.calculate_comparisons(
+            averages, extracted_data, self.analyzer_scales, gas_type
+        )
 
         # Форматировать и отобразить результаты
         formatted_text = self.format_selection_results(
